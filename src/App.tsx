@@ -1,15 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
-import { 
-  graphqlRequest, QUERIES 
+import { useEffect, useRef, useMemo, useState } from 'react';
+import {
+  graphqlRequest, QUERIES
 } from './graphql';
-import { 
-  Landmark, Wallet, Globe, ShoppingBag, ClipboardList, 
-  TrendingUp, FolderHeart, Coins, Cpu, ShieldCheck, 
-  Menu, X, RefreshCw, AlertTriangle, LogOut, CheckCircle
+import {
+  subscribeToOrderStatus,
+  subscribeToSecurities,
+  subscribeToFunds,
+  disposeSubscriptionClient,
+} from './subscriptions';
+import {
+  Landmark, Wallet, Globe, ShoppingBag, ClipboardList,
+  TrendingUp, FolderHeart, Coins, Cpu, ShieldCheck,
+  Menu, X, RefreshCw, AlertTriangle, LogOut, CheckCircle,
+  Radio,
 } from 'lucide-react';
-import type { 
-  BootstrapData, FundsSummary, Order, OrderSide, 
-  Position, Security, Trade, LedgerEntry, AuditEvent 
+import type {
+  BootstrapData, FundsSummary, Order, OrderSide,
+  Position, Security, Trade, LedgerEntry, AuditEvent
 } from './types';
 
 // modular imports
@@ -106,6 +113,12 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [isSimulatedMode, setIsSimulatedMode] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  // Refs to hold unsubscribe functions so we can clean up on logout / unmount
+  const unsubOrderRef = useRef<(() => void) | null>(null);
+  const unsubSecRef = useRef<(() => void) | null>(null);
+  const unsubFundsRef = useRef<(() => void) | null>(null);
 
   // App Data State (Securities, Orders, Trades, Portfolio, Funds, Ledgers, Audit trail)
   const [securities, setSecurities] = useState<Security[]>(MOCK_SECURITIES);
@@ -163,12 +176,12 @@ export default function App() {
   }
 
   // Load baseline values from Ariadne GraphQL backend
-  async function syncBackendData() {
-    setLoading(true);
+  async function syncBackendData(silent = false) {
+    if (!silent) setLoading(true);
     try {
-      logAuditEvent('API Sync Attempt', 'API', 'Connecting to AppSync GraphQL backend at http://localhost:8000/graphql...');
+      if (!silent) logAuditEvent('API Sync Attempt', 'API', 'Connecting to AppSync GraphQL backend at http://localhost:8000/graphql...');
       const response = await graphqlRequest<BootstrapData>(QUERIES.bootstrap, { customerCode: CUSTOMER_CODE });
-      
+
       if (response && response.securities && response.securities.length > 0) {
         setIsSimulatedMode(false);
         setSecurities(response.securities);
@@ -176,14 +189,16 @@ export default function App() {
         setOrders(response.orders);
         setPositions(response.positions);
         setTrades(response.trades);
-        
+
         // Sync selected security if needed
         const currentSec = response.securities.find(s => s.isin === selectedSecurity.isin);
         if (currentSec) setSelectedSecurity(currentSec);
         else setSelectedSecurity(response.securities[0]);
-        
-        logAuditEvent('API Sync Succeeded', 'API', 'Real-time master parameters fetched from local GraphQL endpoint successfully.');
-        triggerToast('Synchronized with local GraphQL API', 'success');
+
+        if (!silent) {
+          logAuditEvent('API Sync Succeeded', 'API', 'Real-time master parameters fetched from local GraphQL endpoint successfully.');
+          triggerToast('Synchronized with local GraphQL API', 'success');
+        }
       } else {
         throw new Error('Empty response datasets from Ariadne');
       }
@@ -191,9 +206,9 @@ export default function App() {
       // Graceful connection failure: Activate high-fidelity local simulation
       setIsSimulatedMode(true);
       logAuditEvent(
-        'GraphQL Server Offline', 
-        'SYSTEM', 
-        'Ariadne GraphQL server (http://localhost:8000/graphql) not found or returned error. Activating high-fidelity offline simulation.', 
+        'GraphQL Server Offline',
+        'SYSTEM',
+        'Ariadne GraphQL server (http://localhost:8000/graphql) not found or returned error. Activating high-fidelity offline simulation.',
         false
       );
       triggerToast('GraphQL server offline. Simulated Mode active.', 'info');
@@ -202,11 +217,93 @@ export default function App() {
     }
   }
 
-  // Boot triggers
+  // Helper: tear down all active subscriptions
+  function teardownSubscriptions() {
+    unsubOrderRef.current?.();
+    unsubSecRef.current?.();
+    unsubFundsRef.current?.();
+    unsubOrderRef.current = null;
+    unsubSecRef.current = null;
+    unsubFundsRef.current = null;
+    disposeSubscriptionClient();
+    setWsConnected(false);
+  }
+
+  // Boot: initial fetch + start WebSocket subscriptions
   useEffect(() => {
-    if (loggedIn) {
-      void syncBackendData();
-    }
+    if (!loggedIn) return;
+
+    // 1. Initial data load via HTTP query
+    void syncBackendData();
+
+    // 2. Subscribe to live order status changes
+    unsubOrderRef.current = subscribeToOrderStatus(
+      CUSTOMER_CODE,
+      (event) => {
+        setWsConnected(true);
+        // Upsert the order in local state
+        setOrders((prev) => {
+          const idx = prev.findIndex((o) => o.id === event.orderId);
+          const updated: Order = {
+            ...(idx >= 0 ? prev[idx] : ({} as Order)),
+            id: event.orderId,
+            clOrdId: event.clOrdId,
+            ndsOrderId: event.ndsOrderId,
+            isin: event.isin,
+            contractId: event.isin, // best-effort fallback
+            securityName: event.securityName,
+            side: event.side,
+            orderType: 'LIMIT',
+            quantity: event.quantity,
+            limitPrice: event.limitPrice,
+            orderValue: event.orderValue,
+            status: event.status,
+            message: event.message,
+            updatedAt: event.updatedAt,
+            createdAt: idx >= 0 ? prev[idx].createdAt : event.updatedAt,
+          };
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = updated;
+            return next;
+          }
+          return [updated, ...prev];
+        });
+        logAuditEvent(
+          'Order Update (WS)',
+          'API',
+          `Order ${event.orderId} → ${event.status} via GraphQL subscription`
+        );
+      },
+      () => setWsConnected(false)
+    );
+
+    // 3. Subscribe to live NDS-OM securities price feed
+    unsubSecRef.current = subscribeToSecurities(
+      (securities) => {
+        setWsConnected(true);
+        setSecurities(securities);
+        setSelectedSecurity((prev) => {
+          const refreshed = securities.find((s) => s.isin === prev.isin);
+          return refreshed ?? prev;
+        });
+      },
+      () => setWsConnected(false)
+    );
+
+    // 4. Subscribe to live funds balance updates
+    unsubFundsRef.current = subscribeToFunds(
+      CUSTOMER_CODE,
+      (updatedFunds) => {
+        setWsConnected(true);
+        setFunds(updatedFunds);
+      },
+      () => setWsConnected(false)
+    );
+
+    return () => {
+      teardownSubscriptions();
+    };
   }, [loggedIn]);
 
   // UPI deposit simulation handler
@@ -215,7 +312,7 @@ export default function App() {
       // Simulate client balance deposit in-state
       const updatedAvailable = funds.availableBalance + amount;
       const refId = `REF-DEP-${Math.floor(Math.random() * 90000) + 10000}`;
-      
+
       setFunds(prev => ({
         ...prev,
         availableBalance: updatedAvailable
@@ -235,8 +332,8 @@ export default function App() {
       setLedger(prev => [newLedger, ...prev]);
 
       logAuditEvent(
-        'Client Funds Added', 
-        'API', 
+        'Client Funds Added',
+        'API',
         `Deposited ${amount.toLocaleString('en-IN')} INR into available funds. Ref: ${refId}`
       );
       triggerToast(`Deposited ₹${amount.toLocaleString('en-IN')} successfully!`, 'success');
@@ -358,11 +455,11 @@ export default function App() {
       setOrders(prev => [newOrder, ...prev]);
 
       logAuditEvent(
-        'Limit Order Accepted', 
-        'FIX', 
+        'Limit Order Accepted',
+        'FIX',
         `BUY ${input.quantity.toLocaleString('en-IN')} units of ${sec.contractId} accepted at ${input.limitPrice.toFixed(4)}. clOrdId: ${clId}`
       );
-      
+
       triggerToast('Order accepted by NDS-OM simulator!', 'success');
 
       // 4. Scheduling high-fidelity matched execution! (simulates active clearing match after 2.5 seconds)
@@ -374,7 +471,7 @@ export default function App() {
 
           // Process match
           const tradeId = `TRD-${Math.floor(Math.random() * 90000) + 10000}`;
-          
+
           // A. Generate Trade record
           const newTrade: Trade = {
             id: tradeId,
@@ -474,8 +571,8 @@ export default function App() {
           }
 
           logAuditEvent(
-            'NDS-OM Trade Execution', 
-            'FIX', 
+            'NDS-OM Trade Execution',
+            'FIX',
             `Trade Match Completed! ID: ${tradeId}. side: ${input.side} quantity: ${input.quantity.toLocaleString('en-IN')} units.`
           );
 
@@ -517,11 +614,11 @@ export default function App() {
           limitPrice: input.limitPrice,
         }
       });
-      
+
       await syncBackendData();
       logAuditEvent(
-        'Mutation Succeeded', 
-        'MUTATION', 
+        'Mutation Succeeded',
+        'MUTATION',
         `Mutation processed. orderId: ${result.placeOrder.orderId} status: ${result.placeOrder.status}`
       );
       return result.placeOrder;
@@ -531,7 +628,7 @@ export default function App() {
   // Cancel order execution handler
   async function handleOrderCancel(orderId: string) {
     logAuditEvent('Cancel Order Event', 'SYSTEM', `Client initiated cancellation of order ID: ${orderId}`);
-    
+
     if (isSimulatedMode) {
       setOrders(currentOrders => {
         const ord = currentOrders.find(o => o.id === orderId);
@@ -589,8 +686,8 @@ export default function App() {
   // Modify G-Sec order parameter handler
   async function handleOrderModify(orderId: string, quantity: number, price: number) {
     logAuditEvent(
-      'Modify Order Event', 
-      'SYSTEM', 
+      'Modify Order Event',
+      'SYSTEM',
       `Client requested modification of order ID ${orderId} -> Qty: ${quantity.toLocaleString('en-IN')} Price: ${price.toFixed(4)}`
     );
 
@@ -630,8 +727,8 @@ export default function App() {
         }
 
         logAuditEvent(
-          'Limit Order Modified', 
-          'FIX', 
+          'Limit Order Modified',
+          'FIX',
           `Order ${orderId} parameters changed successfully. Qty: ${quantity} Price: ${price}`
         );
 
@@ -689,17 +786,17 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 text-slate-800 animate-fade-in selection:bg-blue-100">
         <div className="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
-          
+
           {/* Left panel: Info & brand */}
           <div className="lg:col-span-7 space-y-6 text-left">
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-blue-100 bg-blue-50 text-xs font-bold text-blue-600 tracking-wide uppercase">
               🏛️ Retail G-Sec Trading Hub
             </span>
-            
+
             <h1 className="text-4xl sm:text-5xl font-black text-slate-850 tracking-tight leading-none">
               Axis Securities G-Sec trading
             </h1>
-            
+
             <p className="text-base text-slate-500 font-semibold leading-relaxed max-w-xl">
               Invest in high-security Sovereign Government Securities with transparent live pricing, safety checks, and secure clearing settlement.
             </p>
@@ -736,31 +833,31 @@ export default function App() {
             <div className="space-y-4">
               <div className="space-y-1.5">
                 <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">Customer Code</label>
-                <input 
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm font-semibold outline-none focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-slate-700 font-mono" 
-                  value={CUSTOMER_CODE} 
-                  readOnly 
+                <input
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm font-semibold outline-none focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-slate-700 font-mono"
+                  value={CUSTOMER_CODE}
+                  readOnly
                 />
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">Password</label>
-                <input 
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm font-semibold outline-none focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-slate-700" 
-                  value="password" 
-                  type="password" 
-                  readOnly 
+                <input
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm font-semibold outline-none focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-slate-700"
+                  value="password"
+                  type="password"
+                  readOnly
                 />
               </div>
             </div>
 
-            <button 
+            <button
               className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-blue-500/10 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0"
               onClick={() => setLoggedIn(true)}
             >
               Sign In to Axis G-Sec POC
             </button>
-            
+
             <div className="text-[10px] text-slate-400 font-semibold text-center mt-4">
               Authorized demo profile presets automatically configure CDSL demat.
             </div>
@@ -773,10 +870,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex text-slate-800">
-      
+
       {/* Sidebar - Desktop */}
       <aside className="hidden lg:flex flex-col w-64 bg-slate-900 text-slate-300 border-r border-slate-800 fixed inset-y-0 left-0 z-40">
-        
+
         {/* Brand Header */}
         <div className="p-6 border-b border-slate-800/80 flex items-center gap-3">
           <div className="p-2 bg-blue-900 rounded-xl text-blue-400">
@@ -794,11 +891,10 @@ export default function App() {
             <button
               key={item.id}
               onClick={() => setPage(item.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition-all ${
-                page === item.id 
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/10' 
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition-all ${page === item.id
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/10'
                   : 'text-slate-400 hover:text-white hover:bg-slate-800'
-              }`}
+                }`}
             >
               {item.icon}
               {item.label}
@@ -818,8 +914,11 @@ export default function App() {
             </div>
           </div>
 
-          <button 
-            onClick={() => setLoggedIn(false)}
+          <button
+            onClick={() => {
+              teardownSubscriptions();
+              setLoggedIn(false);
+            }}
             className="w-full flex items-center justify-center gap-1.5 py-2 border border-slate-800 hover:border-slate-700 hover:bg-slate-800 rounded-lg text-[10px] font-bold text-slate-400 hover:text-white transition-all"
           >
             <LogOut className="w-3.5 h-3.5" /> Sign Out
@@ -829,11 +928,11 @@ export default function App() {
 
       {/* Main Work Content Area */}
       <div className="flex-1 lg:ml-64 flex flex-col min-h-screen">
-        
+
         {/* Sticky Header Banner */}
         <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-slate-100/80 px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <button 
+            <button
               onClick={() => setMobileMenuOpen(true)}
               className="lg:hidden p-2 hover:bg-slate-100 rounded-xl text-slate-600"
             >
@@ -847,7 +946,7 @@ export default function App() {
 
           {/* Platform controls / connection tags */}
           <div className="flex items-center gap-3">
-            
+
             {/* Live Indicator */}
             {isSimulatedMode ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-amber-100 bg-amber-50 text-[10px] font-bold text-amber-700 font-mono">
@@ -856,6 +955,21 @@ export default function App() {
             ) : (
               <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-emerald-100 bg-emerald-50 text-[10px] font-bold text-emerald-700 font-mono">
                 <span className="h-1.5 w-1.5 bg-emerald-400 rounded-full animate-pulse" /> GRAPHQL ACTIVE
+              </span>
+            )}
+
+            {/* WebSocket subscription badge */}
+            {!isSimulatedMode && (
+              <span
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[10px] font-bold font-mono transition-all ${
+                  wsConnected
+                    ? 'border-violet-200 bg-violet-50 text-violet-700'
+                    : 'border-slate-200 bg-slate-50 text-slate-400'
+                }`}
+                title={wsConnected ? 'WebSocket subscription active' : 'Connecting to WS…'}
+              >
+                <Radio className={`w-3 h-3 ${wsConnected ? 'text-violet-500 animate-pulse' : 'text-slate-300'}`} />
+                {wsConnected ? 'WS LIVE' : 'WS…'}
               </span>
             )}
 
@@ -873,25 +987,25 @@ export default function App() {
         {/* View render slot router */}
         <main className="flex-1 p-6 md:p-8 overflow-y-auto max-w-7xl w-full mx-auto">
           {page === 'dashboard' && (
-            <DashboardPage 
-              data={{ securities, funds, orders, positions, trades }} 
-              setPage={(p) => setPage(p as any)} 
+            <DashboardPage
+              data={{ securities, funds, orders, positions, trades }}
+              setPage={(p) => setPage(p as any)}
               setSelectedSecurity={setSelectedSecurity}
               onAddFundsClick={() => setPage('funds')}
             />
           )}
 
           {page === 'market' && (
-            <MarketWatchPage 
-              data={{ securities, funds, orders, positions, trades }} 
-              setPage={(p) => setPage(p as any)} 
+            <MarketWatchPage
+              data={{ securities, funds, orders, positions, trades }}
+              setPage={(p) => setPage(p as any)}
               setSelectedSecurity={setSelectedSecurity}
             />
           )}
 
           {page === 'order' && (
-            <PlaceOrderPage 
-              securities={securities} 
+            <PlaceOrderPage
+              securities={securities}
               selectedSecurity={selectedSecurity}
               setSelectedSecurity={setSelectedSecurity}
               funds={funds}
@@ -902,8 +1016,8 @@ export default function App() {
           )}
 
           {page === 'orders' && (
-            <OrderBookPage 
-              orders={orders} 
+            <OrderBookPage
+              orders={orders}
               onCancelOrder={handleOrderCancel}
               onModifyOrder={handleOrderModify}
               showAdminMode={true}
@@ -915,24 +1029,24 @@ export default function App() {
           )}
 
           {page === 'portfolio' && (
-            <PortfolioPage 
-              positions={positions} 
-              securities={securities} 
+            <PortfolioPage
+              positions={positions}
+              securities={securities}
               setPage={(p) => setPage(p as any)}
               setSelectedSecurity={setSelectedSecurity}
             />
           )}
 
           {page === 'funds' && (
-            <FundsLedgerPage 
-              funds={funds} 
-              ledger={ledger} 
+            <FundsLedgerPage
+              funds={funds}
+              ledger={ledger}
               onAddFunds={simulateFundsAdd}
             />
           )}
 
           {page === 'admin' && (
-            <AdminDemo 
+            <AdminDemo
               fixRequest={orders[0]?.fixRequest}
               fixResponse={orders[0]?.fixResponse}
               graphqlRequestExample={QUERIES.placeOrder}
@@ -941,8 +1055,8 @@ export default function App() {
           )}
 
           {page === 'security' && (
-            <SecurityDetailPage 
-              security={selectedSecurity} 
+            <SecurityDetailPage
+              security={selectedSecurity}
               setPage={(p) => setPage(p as any)}
             />
           )}
@@ -952,7 +1066,7 @@ export default function App() {
       {/* Mobile Drawer Navigation overlay */}
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 flex lg:hidden">
-          <div 
+          <div
             className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm"
             onClick={() => setMobileMenuOpen(false)}
           />
@@ -962,7 +1076,7 @@ export default function App() {
                 <Landmark className="w-5 h-5 text-blue-400" />
                 <span className="font-extrabold text-white text-sm">Axis Sovereign</span>
               </div>
-              <button 
+              <button
                 onClick={() => setMobileMenuOpen(false)}
                 className="text-slate-400 hover:text-white"
               >
@@ -978,11 +1092,10 @@ export default function App() {
                     setPage(item.id);
                     setMobileMenuOpen(false);
                   }}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition-all ${
-                    page === item.id 
-                      ? 'bg-blue-600 text-white' 
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition-all ${page === item.id
+                      ? 'bg-blue-600 text-white'
                       : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                  }`}
+                    }`}
                 >
                   {item.icon}
                   {item.label}

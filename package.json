@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "graphql-ws": "^6.0.8",
     "lucide-react": "^1.16.0",
     "react": "latest",
     "react-dom": "latest",

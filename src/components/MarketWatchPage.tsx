@@ -13,68 +13,42 @@ export default function MarketWatchPage({ data, setPage, setSelectedSecurity }: 
   const [secType, setSecType] = useState('ALL'); // ALL, GSEC, TBILL, SDL
   const [maturityFilter, setMaturityFilter] = useState('ALL'); // ALL, SHORT (<3y), MEDIUM (3-10y), LONG (10y+)
   
-  // High-fidelity dynamic tick simulator
+  // High-fidelity dynamic tick state
   const [prices, setPrices] = useState<Record<string, { bid: number; ask: number; ltp: number; direction: 'up' | 'down' | null }>>({});
 
   useEffect(() => {
-    // Initialize prices
-    const initialPrices = {} as typeof prices;
-    data.securities.forEach(s => {
-      initialPrices[s.isin] = { bid: s.bid, ask: s.ask, ltp: s.ltp, direction: null };
-    });
-    setPrices(initialPrices);
-
-    // Simulate mild price movements every few seconds
-    const interval = setInterval(() => {
-      setPrices(prev => {
-        const next = { ...prev };
-        const keys = Object.keys(next);
-        if (!keys.length) return prev;
+    // Sync prices with live data from backend
+    setPrices(prev => {
+      const next = { ...prev };
+      data.securities.forEach(s => {
+        const prevPrice = prev[s.isin];
         
-        // Change price for 1-2 random securities
-        const count = Math.floor(Math.random() * 2) + 1;
-        for (let i = 0; i < count; i++) {
-          const randomIsin = keys[Math.floor(Math.random() * keys.length)];
-          const sec = data.securities.find(s => s.isin === randomIsin);
-          if (!sec) continue;
-
-          const change = (Math.random() * 0.006 - 0.003); // minor delta
-          const isUp = change >= 0;
-          
-          const currentBid = next[randomIsin]?.bid || sec.bid;
-          const currentAsk = next[randomIsin]?.ask || sec.ask;
-          const currentLtp = next[randomIsin]?.ltp || sec.ltp;
-
-          const nextBid = Number((currentBid + change).toFixed(4));
-          const nextAsk = Number((currentAsk + change).toFixed(4));
-          const nextLtp = Number((currentLtp + change).toFixed(4));
-
-          next[randomIsin] = {
-            bid: nextBid,
-            ask: nextAsk,
-            ltp: nextLtp,
-            direction: isUp ? 'up' : 'down'
-          };
-          
-          // Clear direction after 900ms
-          setTimeout(() => {
-            setPrices(current => {
-              if (!current[randomIsin]) return current;
-              return {
-                ...current,
-                [randomIsin]: {
-                  ...current[randomIsin],
-                  direction: null
-                }
-              };
-            });
-          }, 900);
+        // Determine direction if price changed
+        let direction: 'up' | 'down' | null = null;
+        if (prevPrice) {
+          if (s.ltp > prevPrice.ltp) direction = 'up';
+          else if (s.ltp < prevPrice.ltp) direction = 'down';
         }
-        return next;
-      });
-    }, 4000);
 
-    return () => clearInterval(interval);
+        next[s.isin] = { bid: s.bid, ask: s.ask, ltp: s.ltp, direction };
+      });
+      return next;
+    });
+
+    // Clear direction highlight after 1 second
+    const timeout = setTimeout(() => {
+      setPrices(current => {
+        const cleared = { ...current };
+        Object.keys(cleared).forEach(isin => {
+          if (cleared[isin].direction !== null) {
+            cleared[isin] = { ...cleared[isin], direction: null };
+          }
+        });
+        return cleared;
+      });
+    }, 1000);
+
+    return () => clearTimeout(timeout);
   }, [data.securities]);
 
   // Compute filtered securities list
