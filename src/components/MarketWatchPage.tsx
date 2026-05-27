@@ -254,7 +254,7 @@ export default function MarketWatchPage({ data, setPage, setSelectedSecurity }: 
       <div className="flex items-start gap-3 bg-blue-50/50 border border-blue-100 rounded-2xl p-4">
         <ShieldAlert className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
         <p className="text-xs text-blue-800 leading-relaxed font-medium">
-          <strong>Important Pricing Notice:</strong> The G-Sec buy and sell rates displayed above are indicative matching rates from NDS-OM. In compliance with RBI guidelines, retail order executions on the Axis Platform are routing exclusively as <strong>manual Limit orders</strong> to ensure transparent executions.
+          <strong>Important Pricing Notice:</strong> The G-Sec buy and sell rates displayed above are indicative matching rates from NDS-OM. In compliance with RBI guidelines, retail order executions on the Demo Securities Platform are routing exclusively as <strong>manual Limit orders</strong> to ensure transparent executions.
         </p>
       </div>
 

@@ -82,7 +82,7 @@ export default function TradeBookPage({ trades }: TradeBookPageProps) {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.setAttribute('href', url);
-      a.setAttribute('download', `Axis_GSec_TradeBook_${Date.now()}.csv`);
+      a.setAttribute('download', `Demo_Securities_GSec_TradeBook_${Date.now()}.csv`);
       a.click();
     }, 1200);
   }

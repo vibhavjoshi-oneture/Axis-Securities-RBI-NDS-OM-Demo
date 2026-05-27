@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { 
   Search, SlidersHorizontal, Eye, Edit3, Trash2, Calendar, 
-  Clock, ShieldAlert, Cpu, Terminal, ArrowRight 
+  Clock, ShieldAlert, ArrowRight 
 } from 'lucide-react';
 import Drawer from './Drawer';
 import Modal from './Modal';
@@ -13,10 +13,9 @@ interface OrderBookPageProps {
   orders: Order[];
   onCancelOrder: (orderId: string) => Promise<void>;
   onModifyOrder: (orderId: string, quantity: number, price: number) => Promise<void>;
-  showAdminMode: boolean;
 }
 
-export default function OrderBookPage({ orders, onCancelOrder, onModifyOrder, showAdminMode }: OrderBookPageProps) {
+export default function OrderBookPage({ orders, onCancelOrder, onModifyOrder }: OrderBookPageProps) {
   const [search, setSearch] = useState('');
   const [sideFilter, setSideFilter] = useState<'ALL' | OrderSide>('ALL');
   const [statusTab, setStatusTab] = useState<'ALL' | 'PENDING' | OrderStatus>('ALL');
@@ -460,38 +459,6 @@ export default function OrderBookPage({ orders, onCancelOrder, onModifyOrder, sh
               />
             </div>
 
-            {/* FIX Payloads for Developers */}
-            {showAdminMode && (selectedOrder.fixRequest || selectedOrder.fixResponse) && (
-              <div className="space-y-4">
-                <h4 className="text-xs font-extrabold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                  <Cpu className="w-4 h-4 text-slate-400" /> Technical Demo payloads
-                </h4>
-                
-                <div className="space-y-3 font-mono">
-                  {selectedOrder.fixRequest && (
-                    <div className="border border-slate-100 rounded-xl overflow-hidden">
-                      <div className="bg-slate-50 px-4 py-2 text-[10px] text-slate-500 font-bold border-b border-slate-100 flex items-center gap-1.5">
-                        <Terminal className="w-3.5 h-3.5" /> MOCK FIX REQUEST 35=D
-                      </div>
-                      <pre className="bg-slate-950 p-4 text-[10px] text-slate-300 max-h-40 overflow-y-auto">
-                        {JSON.stringify(JSON.parse(selectedOrder.fixRequest), null, 2)}
-                      </pre>
-                    </div>
-                  )}
-
-                  {selectedOrder.fixResponse && (
-                    <div className="border border-slate-100 rounded-xl overflow-hidden">
-                      <div className="bg-slate-50 px-4 py-2 text-[10px] text-slate-500 font-bold border-b border-slate-100 flex items-center gap-1.5">
-                        <Terminal className="w-3.5 h-3.5" /> MOCK EXECUTION REPORT 35=8
-                      </div>
-                      <pre className="bg-slate-950 p-4 text-[10px] text-slate-300 max-h-40 overflow-y-auto">
-                        {JSON.stringify(JSON.parse(selectedOrder.fixResponse), null, 2)}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
 
           </div>
         </Drawer>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Landmark, ShieldAlert, BadgeInfo, Coins, Cpu, SendHorizontal, AlertCircle } from 'lucide-react';
+import { Landmark, ShieldAlert, BadgeInfo, Coins, SendHorizontal, AlertCircle } from 'lucide-react';
 import Modal from './Modal';
 import ValidationChecklist from './ValidationChecklist';
 import type { Security, FundsSummary, OrderSide } from '../types';
@@ -21,7 +21,6 @@ interface PlaceOrderPageProps {
     fixRequest?: string | null;
     fixResponse?: string | null;
   } | null>;
-  showAdminMode: boolean;
 }
 
 export default function PlaceOrderPage({
@@ -30,8 +29,7 @@ export default function PlaceOrderPage({
   setSelectedSecurity,
   funds,
   positions,
-  onPlaceOrder,
-  showAdminMode
+  onPlaceOrder
 }: PlaceOrderPageProps) {
   const [side, setSide] = useState<OrderSide>('BUY');
   const [quantity, setQuantity] = useState(100000);
@@ -381,35 +379,6 @@ export default function PlaceOrderPage({
           </div>
         ) : null}
 
-        {/* Collapsible FIX / Technical Section for Demo mode */}
-        {showAdminMode && (lastFixRequest || lastFixResponse) ? (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-slate-300 space-y-4 animate-fade-in">
-            <div className="flex items-center gap-1.5 pb-3 border-b border-slate-800">
-              <Cpu className="w-5 h-5 text-blue-400" />
-              <h3 className="text-sm font-bold text-white uppercase tracking-wider">Simulated FIX Protocol Payloads</h3>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                  FIX Request (35=D NewOrderSingle)
-                </span>
-                <pre className="bg-slate-950 p-3 rounded-xl text-[11px] font-mono overflow-auto max-h-44 text-slate-300 border border-slate-950">
-                  {JSON.stringify(JSON.parse(lastFixRequest || '{}'), null, 2)}
-                </pre>
-              </div>
-
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                  FIX Response (35=8 ExecutionReport)
-                </span>
-                <pre className="bg-slate-950 p-3 rounded-xl text-[11px] font-mono overflow-auto max-h-44 text-slate-300 border border-slate-950">
-                  {JSON.stringify(JSON.parse(lastFixResponse || '{}'), null, 2)}
-                </pre>
-              </div>
-            </div>
-          </div>
-        ) : null}
 
       </div>
 
@@ -472,7 +441,7 @@ export default function PlaceOrderPage({
               className="mt-1 h-4.5 w-4.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500" 
             />
             <label htmlFor="risk-check" className="text-[11px] text-slate-500 leading-relaxed font-semibold cursor-pointer">
-              <strong>Axis Risk Disclaimer:</strong> I acknowledge that prices on NDS-OM are indicative, this is a manual Limit order quoted per ₹100 face value, and settlement is on T+1.
+              <strong>Demo Securities Risk Disclaimer:</strong> I acknowledge that prices on NDS-OM are indicative, this is a manual Limit order quoted per ₹100 face value, and settlement is on T+1.
             </label>
           </div>
 

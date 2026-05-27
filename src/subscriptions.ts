@@ -13,23 +13,25 @@
 import { createClient } from 'graphql-ws';
 import type { FundsSummary, Order, Security } from './types';
 
-// -------------------------------------------------------------------------
 // WebSocket endpoint (swap http → ws automatically)
-// -------------------------------------------------------------------------
 const HTTP_ENDPOINT =
   (import.meta as any).env?.VITE_GRAPHQL_ENDPOINT || 'http://localhost:8000/graphql';
 
 export const WS_ENDPOINT = HTTP_ENDPOINT.replace(/^http/, 'ws');
 
-// -------------------------------------------------------------------------
 // Singleton graphql-ws client (lazy-created, auto-reconnects)
-// -------------------------------------------------------------------------
 let _client: ReturnType<typeof createClient> | null = null;
 
 function getClient() {
   if (!_client) {
     _client = createClient({
       url: WS_ENDPOINT,
+      connectionParams: () => {
+        const token = localStorage.getItem('session_token');
+        return {
+          Authorization: token ? `Bearer ${token}` : '',
+        };
+      },
       // Retry up to 5 times with exponential back-off before giving up
       retryAttempts: 5,
       retryWait: async (attempt) => {
@@ -38,7 +40,7 @@ function getClient() {
         );
       },
       on: {
-        connected: () => console.log('[graphql-ws] connected to', WS_ENDPOINT),
+        connected: () => console.log('[graphql-ws] connected securely to', WS_ENDPOINT),
         closed: () => console.log('[graphql-ws] connection closed'),
         error: (err) => console.error('[graphql-ws] error', err),
       },
@@ -55,10 +57,7 @@ export function disposeSubscriptionClient() {
   }
 }
 
-// -------------------------------------------------------------------------
 // Subscription document strings
-// -------------------------------------------------------------------------
-
 const ORDER_STATUS_SUBSCRIPTION = /* GraphQL */ `
   subscription OnOrderStatusChanged($customerCode: String!) {
     orderStatusChanged(customerCode: $customerCode) {
@@ -81,17 +80,18 @@ const ORDER_STATUS_SUBSCRIPTION = /* GraphQL */ `
 const SECURITIES_SUBSCRIPTION = /* GraphQL */ `
   subscription OnSecuritiesUpdated {
     securitiesUpdated {
+      security_id
       isin
-      contractId
+      contractid
       name
       coupon
-      maturityDate
+      maturitydate
       bid
       ask
       ltp
       yield
-      lotSize
-      tickSize
+      lotsize
+      ticksize
     }
   }
 `;
@@ -107,11 +107,9 @@ const FUNDS_SUBSCRIPTION = /* GraphQL */ `
   }
 `;
 
-// -------------------------------------------------------------------------
-// Typed subscription helpers
-// -------------------------------------------------------------------------
-
-type OrderStatusEvent = Omit<Order, 'contractId' | 'orderType' | 'fixRequest' | 'fixResponse' | 'createdAt'>;
+type OrderStatusEvent = Omit<Order, 'contractId' | 'orderType' | 'fixRequest' | 'fixResponse' | 'createdAt'> & {
+  orderId: string;
+};
 
 /**
  * Subscribe to live order status changes for a given customer.
@@ -149,11 +147,26 @@ export function subscribeToSecurities(
   onData: (securities: Security[]) => void,
   onError?: (err: unknown) => void
 ): () => void {
-  const unsub = getClient().subscribe<{ securitiesUpdated: Security[] }>(
+  const unsub = getClient().subscribe<{ securitiesUpdated: any[] }>(
     { query: SECURITIES_SUBSCRIPTION },
     {
       next: ({ data }) => {
-        if (data?.securitiesUpdated) onData(data.securitiesUpdated);
+        if (data?.securitiesUpdated) {
+          const mapped = data.securitiesUpdated.map((s: any) => ({
+            isin: s.isin,
+            contractId: s.contractid,
+            name: s.name,
+            coupon: s.coupon,
+            maturityDate: s.maturitydate,
+            bid: Number(s.bid),
+            ask: Number(s.ask),
+            ltp: Number(s.ltp),
+            yield: s.yield,
+            lotSize: Number(s.lotsize),
+            tickSize: Number(s.ticksize),
+          }));
+          onData(mapped);
+        }
       },
       error: (err) => {
         console.error('[subscription:securitiesUpdated]', err);

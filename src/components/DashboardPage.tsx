@@ -282,7 +282,7 @@ export default function DashboardPage({ data, setPage, setSelectedSecurity, onAd
                     ))}
                   </Pie>
                   <Tooltip 
-                    formatter={(val: number) => formatCurrency(val)} 
+                    formatter={(val: any) => formatCurrency(Number(val))} 
                     contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', fontSize: 12 }} 
                   />
                 </PieChart>

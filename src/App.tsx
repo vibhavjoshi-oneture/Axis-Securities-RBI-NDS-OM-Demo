@@ -33,8 +33,6 @@ import Toast, { ToastMessage } from './components/Toast';
 
 import './styles.css';
 
-const CUSTOMER_CODE = 'ASL-DEMO-1001';
-
 type Page = 'dashboard' | 'market' | 'order' | 'orders' | 'trades' | 'portfolio' | 'funds' | 'admin';
 type ExtendedPage = Page | 'security';
 
@@ -108,10 +106,13 @@ const MOCK_SECURITIES: Security[] = [
 ];
 
 export default function App() {
-  const [loggedIn, setLoggedIn] = useState(false);
+  const [customerCode, setCustomerCode] = useState(localStorage.getItem('customer_code') || 'ASL-DEMO-1001');
+  const [customerName, setCustomerName] = useState(localStorage.getItem('customer_name') || 'ASL Demo Account');
+  const [loggedIn, setLoggedIn] = useState(!!localStorage.getItem('session_token'));
+  const [panCode, setPanCode] = useState('ABCDE1234F'); // Seeded demo client PAN
+
   const [page, setPage] = useState<ExtendedPage>('dashboard');
   const [loading, setLoading] = useState(false);
-  const [isSimulatedMode, setIsSimulatedMode] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
 
@@ -123,11 +124,31 @@ export default function App() {
   // App Data State (Securities, Orders, Trades, Portfolio, Funds, Ledgers, Audit trail)
   const [securities, setSecurities] = useState<Security[]>(MOCK_SECURITIES);
   const [funds, setFunds] = useState<FundsSummary>({
-    customerCode: CUSTOMER_CODE,
+    customerCode: customerCode,
     availableBalance: 2500000, // ₹25L starting
     blockedBalance: 0,
     usedToday: 0
   });
+
+  // Listen for unauthorized events to redirect to login
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      teardownSubscriptions();
+      localStorage.removeItem('session_token');
+      localStorage.removeItem('customer_code');
+      localStorage.removeItem('customer_name');
+      setLoggedIn(false);
+      setCustomerCode('ASL-DEMO-1001');
+      setCustomerName('ASL Demo Account');
+      triggerToast('Session expired or unauthorized. Please sign in again.', 'error');
+      logAuditEvent('Session Expired', 'SYSTEM', 'Session cleared due to unauthorized request.', false);
+    };
+
+    window.addEventListener('auth_unauthorized', handleUnauthorized);
+    return () => {
+      window.removeEventListener('auth_unauthorized', handleUnauthorized);
+    };
+  }, []);
   const [orders, setOrders] = useState<Order[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -149,7 +170,7 @@ export default function App() {
       timestamp: new Date().toISOString(),
       title: 'Platform Initialization',
       type: 'SYSTEM',
-      details: 'Axis Securities G-Sec trading module loaded successfully in browser.',
+      details: 'Demo Securities G-Sec trading module loaded successfully in browser.',
       success: true
     }
   ]);
@@ -180,10 +201,9 @@ export default function App() {
     if (!silent) setLoading(true);
     try {
       if (!silent) logAuditEvent('API Sync Attempt', 'API', 'Connecting to AppSync GraphQL backend at http://localhost:8000/graphql...');
-      const response = await graphqlRequest<BootstrapData>(QUERIES.bootstrap, { customerCode: CUSTOMER_CODE });
+      const response = await graphqlRequest<BootstrapData>(QUERIES.bootstrap, { customerCode: customerCode });
 
       if (response && response.securities && response.securities.length > 0) {
-        setIsSimulatedMode(false);
         setSecurities(response.securities);
         setFunds(response.funds);
         setOrders(response.orders);
@@ -202,16 +222,14 @@ export default function App() {
       } else {
         throw new Error('Empty response datasets from Ariadne');
       }
-    } catch (err) {
-      // Graceful connection failure: Activate high-fidelity local simulation
-      setIsSimulatedMode(true);
+    } catch (err: any) {
       logAuditEvent(
         'GraphQL Server Offline',
         'SYSTEM',
-        'Ariadne GraphQL server (http://localhost:8000/graphql) not found or returned error. Activating high-fidelity offline simulation.',
+        `Ariadne GraphQL server (http://localhost:8000/graphql) not found or returned error: ${err.message || err}`,
         false
       );
-      triggerToast('GraphQL server offline. Simulated Mode active.', 'info');
+      triggerToast('GraphQL server connection failed. Please check backend connection.', 'error');
     } finally {
       setLoading(false);
     }
@@ -229,6 +247,37 @@ export default function App() {
     setWsConnected(false);
   }
 
+  async function handleSignIn() {
+    setLoading(true);
+    try {
+      logAuditEvent('Login Attempt', 'API', `Logging in as ${customerCode}...`);
+      const response = await graphqlRequest<{ login: { token: string; customercode: string; name: string } }>(
+        QUERIES.login,
+        { customercode: customerCode, pan: panCode }
+      );
+      localStorage.setItem('session_token', response.login.token);
+      localStorage.setItem('customer_code', response.login.customercode);
+      localStorage.setItem('customer_name', response.login.name);
+      setLoggedIn(true);
+      triggerToast('Signed in successfully', 'success');
+      logAuditEvent('Login Succeeded', 'API', `Authenticated as ${response.login.name} (${response.login.customercode})`);
+    } catch (err: any) {
+      logAuditEvent('Login Failed', 'API', err.message || 'Invalid credentials', false);
+      triggerToast(err.message || 'Invalid credentials', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleSignOut() {
+    teardownSubscriptions();
+    localStorage.removeItem('session_token');
+    localStorage.removeItem('customer_code');
+    localStorage.removeItem('customer_name');
+    setLoggedIn(false);
+    triggerToast('Signed out successfully', 'info');
+  }
+
   // Boot: initial fetch + start WebSocket subscriptions
   useEffect(() => {
     if (!loggedIn) return;
@@ -238,7 +287,7 @@ export default function App() {
 
     // 2. Subscribe to live order status changes
     unsubOrderRef.current = subscribeToOrderStatus(
-      CUSTOMER_CODE,
+      customerCode,
       (event) => {
         setWsConnected(true);
         // Upsert the order in local state
@@ -293,7 +342,7 @@ export default function App() {
 
     // 4. Subscribe to live funds balance updates
     unsubFundsRef.current = subscribeToFunds(
-      CUSTOMER_CODE,
+      customerCode,
       (updatedFunds) => {
         setWsConnected(true);
         setFunds(updatedFunds);
@@ -304,45 +353,39 @@ export default function App() {
     return () => {
       teardownSubscriptions();
     };
-  }, [loggedIn]);
+  }, [loggedIn, customerCode]);
 
   // UPI deposit simulation handler
   async function simulateFundsAdd(amount: number) {
-    if (isSimulatedMode) {
-      // Simulate client balance deposit in-state
-      const updatedAvailable = funds.availableBalance + amount;
+    setLoading(true);
+    try {
       const refId = `REF-DEP-${Math.floor(Math.random() * 90000) + 10000}`;
-
-      setFunds(prev => ({
-        ...prev,
-        availableBalance: updatedAvailable
-      }));
-
-      // Append ledger log
-      const newLedger: LedgerEntry = {
-        id: `LED-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        type: 'DEPOSIT',
-        amount,
-        balanceAfter: updatedAvailable,
-        referenceId: refId,
-        status: 'COMPLETED',
-        description: 'UPI simulated client deposit'
-      };
-      setLedger(prev => [newLedger, ...prev]);
-
+      logAuditEvent('Funds Deposit Mutation', 'MUTATION', `Invoking createPublic_ledger_entries GraphQL mutation for ₹${amount.toLocaleString('en-IN')}...`);
+      
+      await graphqlRequest<{ createLedgerEntry: any }>(QUERIES.createLedgerEntry, {
+        input: {
+          customercode: customerCode,
+          type: 'DEPOSIT',
+          amount: amount,
+          balanceafter: funds.availableBalance + amount,
+          referenceid: refId,
+          status: 'COMPLETED',
+          description: 'UPI dynamic client deposit'
+        }
+      });
+      
+      await syncBackendData(true);
       logAuditEvent(
-        'Client Funds Added',
-        'API',
-        `Deposited ${amount.toLocaleString('en-IN')} INR into available funds. Ref: ${refId}`
+        'Deposit Mutation Succeeded',
+        'MUTATION',
+        `Sovereign funds successfully deposited in PostgreSQL database. Ref: ${refId}`
       );
       triggerToast(`Deposited ₹${amount.toLocaleString('en-IN')} successfully!`, 'success');
-    } else {
-      // If live backend existed for funds adjustment, we would route it. 
-      // For POC, simulate client side regardless:
-      const updatedAvailable = funds.availableBalance + amount;
-      setFunds(prev => ({ ...prev, availableBalance: updatedAvailable }));
-      triggerToast(`Simulated deposit of ₹${amount.toLocaleString('en-IN')} completed.`, 'success');
+    } catch (err: any) {
+      logAuditEvent('Deposit Mutation Failed', 'MUTATION', err.message || 'Deposit failed', false);
+      triggerToast(err.message || 'Deposit failed', 'error');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -356,331 +399,33 @@ export default function App() {
     const sec = securities.find(s => s.isin === input.isin);
     if (!sec) return null;
 
-    const estimatedValue = Math.round((input.quantity * input.limitPrice) / 100);
-
-    if (isSimulatedMode) {
-      // 1. Double check client bounds
-      if (input.side === 'BUY' && estimatedValue > funds.availableBalance) {
-        triggerToast('Insufficient available G-Sec funds.', 'error');
-        return null;
-      }
-
-      // Generate dummy clOrdId and orderId
-      const clId = `CL-${Math.floor(Math.random() * 90000) + 10000}`;
-      const ordId = `ORD-${Date.now().toString().slice(-6)}`;
-      const ndsId = `NDS-${Math.floor(Math.random() * 900000) + 100000}`;
-
-      // Build mock FIX 35=D NewOrderSingle
-      const fixRequest = {
-        BeginString: 'FIX.4.4',
-        MsgType: 'D',
-        SenderCompID: 'AXIS_SEC_RETAIL',
-        TargetCompID: 'NDS_OM_MATCH',
-        ClOrdID: clId,
-        Account: CUSTOMER_CODE,
-        Symbol: sec.contractId,
-        SecurityID: sec.isin,
-        Side: input.side === 'BUY' ? '1' : '2',
-        OrderQty: input.quantity,
-        Price: input.limitPrice,
-        OrdType: '2', // Limit
-        HandlInst: '1',
-        TransactTime: new Date().toISOString()
-      };
-
-      // Build mock Execution Report 35=8
-      const fixResponse = {
-        BeginString: 'FIX.4.4',
-        MsgType: '8',
-        SenderCompID: 'NDS_OM_MATCH',
-        TargetCompID: 'AXIS_SEC_RETAIL',
-        OrderID: ordId,
-        ClOrdID: clId,
-        ExecID: `EX-${Math.floor(Math.random() * 90000) + 10000}`,
-        ExecType: '0', // New
-        OrdStatus: '0', // New
-        Symbol: sec.contractId,
-        Side: input.side === 'BUY' ? '1' : '2',
-        OrderQty: input.quantity,
-        Price: input.limitPrice,
-        LeavesQty: input.quantity,
-        CumQty: 0,
-        AvgPx: 0.0,
-        TransactTime: new Date().toISOString()
-      };
-
-      // 2. Adjust funds balances immediately for BUY
-      if (input.side === 'BUY') {
-        setFunds(prev => ({
-          ...prev,
-          availableBalance: prev.availableBalance - estimatedValue,
-          blockedBalance: prev.blockedBalance + estimatedValue
-        }));
-
-        // Ledger Block Entry
-        const blockLedger: LedgerEntry = {
-          id: `LED-${Date.now()}-B`,
-          timestamp: new Date().toISOString(),
-          type: 'BLOCK',
-          amount: estimatedValue,
-          balanceAfter: funds.availableBalance - estimatedValue,
-          referenceId: clId,
-          status: 'COMPLETED',
-          description: `Capital hold for BUY limit order: ${sec.contractId}`
-        };
-        setLedger(prev => [blockLedger, ...prev]);
-      }
-
-      // 3. Create simulated accepted order record
-      const newOrder: Order = {
-        id: ordId,
-        clOrdId: clId,
-        ndsOrderId: ndsId,
-        isin: sec.isin,
-        contractId: sec.contractId,
-        securityName: sec.name,
+    logAuditEvent('Place Order Mutation', 'MUTATION', `Invoking placeOrder GraphQL mutation on ISIN ${input.isin}...`);
+    const result = await graphqlRequest<{ placeOrder: any }>(QUERIES.placeOrder, {
+      input: {
+        customercode: customerCode,
+        isin: input.isin,
         side: input.side,
-        orderType: 'LIMIT',
+        ordertype: 'LIMIT',
         quantity: input.quantity,
-        limitPrice: input.limitPrice,
-        orderValue: estimatedValue,
-        status: 'ACCEPTED',
-        message: 'Order accepted by sovereign matching gateway.',
-        fixRequest: JSON.stringify(fixRequest),
-        fixResponse: JSON.stringify(fixResponse),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
+        limitprice: input.limitPrice,
+      }
+    });
 
-      setOrders(prev => [newOrder, ...prev]);
-
-      logAuditEvent(
-        'Limit Order Accepted',
-        'FIX',
-        `BUY ${input.quantity.toLocaleString('en-IN')} units of ${sec.contractId} accepted at ${input.limitPrice.toFixed(4)}. clOrdId: ${clId}`
-      );
-
-      triggerToast('Order accepted by NDS-OM simulator!', 'success');
-
-      // 4. Scheduling high-fidelity matched execution! (simulates active clearing match after 2.5 seconds)
-      setTimeout(() => {
-        // Fetch order again to verify it wasn't cancelled or modified in the meantime
-        setOrders(currentOrders => {
-          const ord = currentOrders.find(o => o.id === ordId);
-          if (!ord || ord.status !== 'ACCEPTED') return currentOrders;
-
-          // Process match
-          const tradeId = `TRD-${Math.floor(Math.random() * 90000) + 10000}`;
-
-          // A. Generate Trade record
-          const newTrade: Trade = {
-            id: tradeId,
-            orderId: ordId,
-            isin: sec.isin,
-            securityName: sec.name,
-            side: input.side,
-            quantity: input.quantity,
-            price: input.limitPrice,
-            tradeValue: estimatedValue,
-            tradeTime: new Date().toISOString()
-          };
-          setTrades(t => [newTrade, ...t]);
-
-          // B. Adjust demat holdings / Positions
-          setPositions(pos => {
-            const index = pos.findIndex(p => p.isin === sec.isin);
-            const nextPos = [...pos];
-            if (input.side === 'BUY') {
-              if (index >= 0) {
-                const existing = nextPos[index];
-                nextPos[index] = {
-                  ...existing,
-                  quantity: existing.quantity + input.quantity,
-                  marketValue: existing.marketValue + estimatedValue,
-                  // re-calculate average buy price
-                  averagePrice: Number(((existing.quantity * existing.averagePrice + input.quantity * input.limitPrice) / (existing.quantity + input.quantity)).toFixed(4))
-                };
-              } else {
-                nextPos.push({
-                  isin: sec.isin,
-                  securityName: sec.name,
-                  quantity: input.quantity,
-                  averagePrice: input.limitPrice,
-                  marketValue: estimatedValue
-                });
-              }
-            } else {
-              // SELL: Reduce quantity
-              if (index >= 0) {
-                const existing = nextPos[index];
-                const rem = existing.quantity - input.quantity;
-                if (rem <= 0) {
-                  nextPos.splice(index, 1);
-                } else {
-                  nextPos[index] = {
-                    ...existing,
-                    quantity: rem,
-                    marketValue: Math.round((rem * ltp) / 100) // update based on master LTP
-                  };
-                }
-              }
-            }
-            return nextPos;
-          });
-
-          // C. Settle blocked balances and cash ledgers
-          setFunds(currFunds => {
-            let nextFunds = { ...currFunds };
-            if (input.side === 'BUY') {
-              nextFunds.blockedBalance = Math.max(0, currFunds.blockedBalance - estimatedValue);
-              nextFunds.usedToday += estimatedValue;
-            } else {
-              // SELL: Releases cash directly to Available G-Sec funds
-              nextFunds.availableBalance += estimatedValue;
-              nextFunds.usedToday += estimatedValue;
-            }
-            return nextFunds;
-          });
-
-          // Add release ledger log (only for buy block releases, sell gets direct credit)
-          if (input.side === 'BUY') {
-            const releaseLedger: LedgerEntry = {
-              id: `LED-${Date.now()}-R`,
-              timestamp: new Date().toISOString(),
-              type: 'RELEASE',
-              amount: estimatedValue,
-              balanceAfter: funds.availableBalance, // adjusted balance
-              referenceId: tradeId,
-              status: 'COMPLETED',
-              description: `Escrow block released on execution match: ${sec.contractId}`
-            };
-            setLedger(l => [releaseLedger, ...l]);
-          } else {
-            // Sell deposit credit
-            const creditLedger: LedgerEntry = {
-              id: `LED-${Date.now()}-C`,
-              timestamp: new Date().toISOString(),
-              type: 'DEPOSIT',
-              amount: estimatedValue,
-              balanceAfter: funds.availableBalance + estimatedValue,
-              referenceId: tradeId,
-              status: 'COMPLETED',
-              description: `ICCL sale settlement credit: ${sec.contractId}`
-            };
-            setLedger(l => [creditLedger, ...l]);
-          }
-
-          logAuditEvent(
-            'NDS-OM Trade Execution',
-            'FIX',
-            `Trade Match Completed! ID: ${tradeId}. side: ${input.side} quantity: ${input.quantity.toLocaleString('en-IN')} units.`
-          );
-
-          triggerToast(`Order matched on NDS-OM. Trade ID: ${tradeId}`, 'success');
-
-          // D. Change order state to EXECUTED
-          return currentOrders.map(o => {
-            if (o.id === ordId) {
-              return {
-                ...o,
-                status: 'EXECUTED',
-                message: 'All allocations executed and completed on clearing corporation (T+1).',
-                updatedAt: new Date().toISOString()
-              };
-            }
-            return o;
-          });
-        });
-      }, 2500);
-
-      // Return local response parameters
-      return {
-        status: 'ACCEPTED',
-        message: 'Order accepted by sovereign matching gateway.',
-        fixRequest: JSON.stringify(fixRequest),
-        fixResponse: JSON.stringify(fixResponse)
-      };
-
-    } else {
-      // Live GraphQL mutation routing
-      logAuditEvent('Place Order Mutation', 'MUTATION', `Invoking placeOrder GraphQL mutation on ISIN ${input.isin}...`);
-      const result = await graphqlRequest<{ placeOrder: any }>(QUERIES.placeOrder, {
-        input: {
-          customerCode: CUSTOMER_CODE,
-          isin: input.isin,
-          side: input.side,
-          orderType: 'LIMIT',
-          quantity: input.quantity,
-          limitPrice: input.limitPrice,
-        }
-      });
-
-      await syncBackendData();
-      logAuditEvent(
-        'Mutation Succeeded',
-        'MUTATION',
-        `Mutation processed. orderId: ${result.placeOrder.orderId} status: ${result.placeOrder.status}`
-      );
-      return result.placeOrder;
-    }
+    await syncBackendData();
+    logAuditEvent(
+      'Mutation Succeeded',
+      'MUTATION',
+      `Mutation processed. orderId: ${result.placeOrder.orderId} status: ${result.placeOrder.status}`
+    );
+    return result.placeOrder;
   }
 
   // Cancel order execution handler
   async function handleOrderCancel(orderId: string) {
     logAuditEvent('Cancel Order Event', 'SYSTEM', `Client initiated cancellation of order ID: ${orderId}`);
-
-    if (isSimulatedMode) {
-      setOrders(currentOrders => {
-        const ord = currentOrders.find(o => o.id === orderId);
-        if (!ord) return currentOrders;
-
-        // If Buy order, release blocked capital
-        if (ord.side === 'BUY') {
-          setFunds(prev => ({
-            ...prev,
-            availableBalance: prev.availableBalance + ord.orderValue,
-            blockedBalance: Math.max(0, prev.blockedBalance - ord.orderValue)
-          }));
-
-          const releaseLedger: LedgerEntry = {
-            id: `LED-${Date.now()}-CR`,
-            timestamp: new Date().toISOString(),
-            type: 'RELEASE',
-            amount: ord.orderValue,
-            balanceAfter: funds.availableBalance + ord.orderValue,
-            referenceId: ord.clOrdId,
-            status: 'COMPLETED',
-            description: `Escrow block released on order cancel: ${ord.contractId}`
-          };
-          setLedger(prev => [releaseLedger, ...prev]);
-        }
-
-        logAuditEvent(
-          'Limit Order Cancelled',
-          'FIX',
-          `Order ${orderId} successfully marked CANCELLED on NDS-OM matching grids.`
-        );
-
-        triggerToast('Order successfully cancelled.', 'info');
-
-        return currentOrders.map(o => {
-          if (o.id === orderId) {
-            return {
-              ...o,
-              status: 'CANCELLED',
-              message: 'Order cancelled manually by user.',
-              updatedAt: new Date().toISOString()
-            };
-          }
-          return o;
-        });
-      });
-    } else {
-      // Live GraphQL cancellation
-      await graphqlRequest(QUERIES.cancelOrder, { orderId });
-      await syncBackendData();
-      triggerToast('Order cancelled successfully.', 'success');
-    }
+    await graphqlRequest(QUERIES.cancelOrder, { orderId: Number(orderId) });
+    await syncBackendData();
+    triggerToast('Order cancelled successfully.', 'success');
   }
 
   // Modify G-Sec order parameter handler
@@ -690,77 +435,15 @@ export default function App() {
       'SYSTEM',
       `Client requested modification of order ID ${orderId} -> Qty: ${quantity.toLocaleString('en-IN')} Price: ${price.toFixed(4)}`
     );
-
-    if (isSimulatedMode) {
-      setOrders(currentOrders => {
-        const ord = currentOrders.find(o => o.id === orderId);
-        if (!ord) return currentOrders;
-
-        const newEstimatedVal = Math.round((quantity * price) / 100);
-        const valDiff = newEstimatedVal - ord.orderValue;
-
-        // Verify balance safety if Buying more
-        if (ord.side === 'BUY' && valDiff > funds.availableBalance) {
-          triggerToast('Insufficient available balance to expand order limits.', 'error');
-          return currentOrders;
-        }
-
-        // Adjust balances for BUY limits
-        if (ord.side === 'BUY') {
-          setFunds(prev => ({
-            ...prev,
-            availableBalance: prev.availableBalance - valDiff,
-            blockedBalance: prev.blockedBalance + valDiff
-          }));
-
-          const adjustLedger: LedgerEntry = {
-            id: `LED-${Date.now()}-MA`,
-            timestamp: new Date().toISOString(),
-            type: valDiff >= 0 ? 'BLOCK' : 'RELEASE',
-            amount: Math.abs(valDiff),
-            balanceAfter: funds.availableBalance - valDiff,
-            referenceId: ord.clOrdId,
-            status: 'COMPLETED',
-            description: `Escrow hold adjustment for BUY modification: ${ord.contractId}`
-          };
-          setLedger(prev => [adjustLedger, ...prev]);
-        }
-
-        logAuditEvent(
-          'Limit Order Modified',
-          'FIX',
-          `Order ${orderId} parameters changed successfully. Qty: ${quantity} Price: ${price}`
-        );
-
-        triggerToast('Order parameters modified successfully!', 'success');
-
-        return currentOrders.map(o => {
-          if (o.id === orderId) {
-            return {
-              ...o,
-              quantity,
-              limitPrice: price,
-              orderValue: newEstimatedVal,
-              status: 'MODIFIED',
-              message: 'Order modified and matching indices adjusted.',
-              updatedAt: new Date().toISOString()
-            };
-          }
-          return o;
-        });
-      });
-    } else {
-      // Live GraphQL modification
-      await graphqlRequest(QUERIES.modifyOrder, {
-        input: {
-          orderId,
-          quantity,
-          limitPrice: price
-        }
-      });
-      await syncBackendData();
-      triggerToast('Order modified successfully!', 'success');
-    }
+    await graphqlRequest(QUERIES.modifyOrder, {
+      input: {
+        order_id: Number(orderId),
+        quantity,
+        limitprice: price
+      }
+    });
+    await syncBackendData();
+    triggerToast('Order modified successfully!', 'success');
   }
 
   // Side bar Navigation listings
@@ -772,13 +455,12 @@ export default function App() {
     { id: 'trades', label: 'Trade Book', icon: <TrendingUp className="w-5 h-5" /> },
     { id: 'portfolio', label: 'Positions', icon: <FolderHeart className="w-5 h-5" /> },
     { id: 'funds', label: 'Funds ledger', icon: <Coins className="w-5 h-5" /> },
-    { id: 'admin', label: 'Admin Sim Demo', icon: <Cpu className="w-5 h-5" /> },
   ] as Array<{ id: Page; label: string; icon: React.ReactNode }>;
 
   // Retrieve current active view title
   const activeTitle = useMemo(() => {
     if (page === 'security') return `G-Sec Security Profile: ${selectedSecurity.contractId}`;
-    return nav.find(item => item.id === page)?.label || 'Axis Sec Platform';
+    return nav.find(item => item.id === page)?.label || 'Demo Securities Platform';
   }, [page, selectedSecurity]);
 
   // Main login prompt view
@@ -794,7 +476,7 @@ export default function App() {
             </span>
 
             <h1 className="text-4xl sm:text-5xl font-black text-slate-850 tracking-tight leading-none">
-              Axis Securities G-Sec trading
+              Demo Securities G-Sec trading
             </h1>
 
             <p className="text-base text-slate-500 font-semibold leading-relaxed max-w-xl">
@@ -824,7 +506,7 @@ export default function App() {
           </div>
 
           {/* Right panel: Login box */}
-          <div className="lg:col-span-5 bg-white border border-slate-100 rounded-3xl shadow-xl p-8 space-y-6">
+          <div className="lg:col-span-5 bg-white border border-slate-100 rounded-3xl shadow-xl p-8 space-y-6 text-left">
             <div>
               <h2 className="text-xl font-bold text-slate-800">Demo Account Gateway</h2>
               <p className="text-xs text-slate-400 font-semibold mt-1">Authenticate client credentials to access sovereign matching</p>
@@ -834,28 +516,38 @@ export default function App() {
               <div className="space-y-1.5">
                 <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">Customer Code</label>
                 <input
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm font-semibold outline-none focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-slate-700 font-mono"
-                  value={CUSTOMER_CODE}
-                  readOnly
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm font-semibold outline-none focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-slate-750 font-mono"
+                  value={customerCode}
+                  onChange={(e) => setCustomerCode(e.target.value)}
+                  placeholder="e.g. ASL-DEMO-1001"
                 />
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">Password</label>
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">PAN (Password)</label>
                 <input
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm font-semibold outline-none focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-slate-700"
-                  value="password"
-                  type="password"
-                  readOnly
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm font-semibold outline-none focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-slate-750 font-mono"
+                  value={panCode}
+                  onChange={(e) => setPanCode(e.target.value)}
+                  placeholder="e.g. ABCDE1234F"
                 />
               </div>
             </div>
 
+            <div className="bg-blue-50/70 border border-blue-100/80 rounded-2xl p-4 text-[11px] text-blue-800 font-semibold space-y-2">
+              <span className="block font-bold">💡 Seeded Demo Credentials:</span>
+              <ul className="list-disc pl-4 font-mono text-[10px] space-y-1 text-blue-600">
+                <li>Code: <span className="font-bold">ASL-DEMO-1001</span> | PAN: <span className="font-bold">ABCDE1234F</span></li>
+                <li>Code: <span className="font-bold">ASL-DEMO-1002</span> | PAN: <span className="font-bold">XYZWY9876Z</span></li>
+              </ul>
+            </div>
+
             <button
-              className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-blue-500/10 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0"
-              onClick={() => setLoggedIn(true)}
+              className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-blue-500/10 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-55"
+              onClick={handleSignIn}
+              disabled={loading}
             >
-              Sign In to Axis G-Sec POC
+              {loading ? 'Authenticating...' : 'Sign In to Demo Securities G-Sec POC'}
             </button>
 
             <div className="text-[10px] text-slate-400 font-semibold text-center mt-4">
@@ -880,7 +572,7 @@ export default function App() {
             <Landmark className="w-6 h-6" />
           </div>
           <div>
-            <span className="text-sm font-black text-white block uppercase tracking-wide">Axis Sovereign</span>
+            <span className="text-sm font-black text-white block uppercase tracking-wide">Demo Sovereign</span>
             <span className="text-[10px] font-bold text-slate-500 block uppercase">G-Sec Platform</span>
           </div>
         </div>
@@ -903,22 +595,19 @@ export default function App() {
         </nav>
 
         {/* User Footer info */}
-        <div className="p-5 border-t border-slate-800/80 bg-slate-950/20 space-y-4">
+        <div className="p-5 border-t border-slate-800/80 bg-slate-950/20 space-y-4 text-left">
           <div className="flex items-center gap-2">
             <div className="h-8 w-8 bg-blue-900 rounded-full flex items-center justify-center font-bold text-xs text-blue-300 uppercase">
-              AS
+              {customerName.substring(0, 2).toUpperCase()}
             </div>
             <div className="min-w-0">
-              <span className="text-xs font-bold text-white block truncate">ASL Demo Account</span>
-              <span className="text-[9px] font-mono text-slate-500 block truncate">{CUSTOMER_CODE}</span>
+              <span className="text-xs font-bold text-white block truncate">{customerName}</span>
+              <span className="text-[9px] font-mono text-slate-500 block truncate">{customerCode}</span>
             </div>
           </div>
 
           <button
-            onClick={() => {
-              teardownSubscriptions();
-              setLoggedIn(false);
-            }}
+            onClick={handleSignOut}
             className="w-full flex items-center justify-center gap-1.5 py-2 border border-slate-800 hover:border-slate-700 hover:bg-slate-800 rounded-lg text-[10px] font-bold text-slate-400 hover:text-white transition-all"
           >
             <LogOut className="w-3.5 h-3.5" /> Sign Out
@@ -939,7 +628,7 @@ export default function App() {
               <Menu className="w-5 h-5" />
             </button>
             <div>
-              <span className="text-[10px] font-extrabold uppercase text-blue-600 tracking-wider font-mono">Axis G-Sec Terminal</span>
+              <span className="text-[10px] font-extrabold uppercase text-blue-600 tracking-wider font-mono">Demo G-Sec Terminal</span>
               <h1 className="text-lg font-bold text-slate-800 leading-tight">{activeTitle}</h1>
             </div>
           </div>
@@ -948,33 +637,25 @@ export default function App() {
           <div className="flex items-center gap-3">
 
             {/* Live Indicator */}
-            {isSimulatedMode ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-amber-100 bg-amber-50 text-[10px] font-bold text-amber-700 font-mono">
-                <span className="h-1.5 w-1.5 bg-amber-400 rounded-full animate-pulse" /> SIMULATED OFFLINE
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-emerald-100 bg-emerald-50 text-[10px] font-bold text-emerald-700 font-mono">
-                <span className="h-1.5 w-1.5 bg-emerald-400 rounded-full animate-pulse" /> GRAPHQL ACTIVE
-              </span>
-            )}
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-emerald-100 bg-emerald-50 text-[10px] font-bold text-emerald-700 font-mono">
+              <span className="h-1.5 w-1.5 bg-emerald-400 rounded-full animate-pulse" /> LIVE OMS PORTAL
+            </span>
 
             {/* WebSocket subscription badge */}
-            {!isSimulatedMode && (
-              <span
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[10px] font-bold font-mono transition-all ${
-                  wsConnected
-                    ? 'border-violet-200 bg-violet-50 text-violet-700'
-                    : 'border-slate-200 bg-slate-50 text-slate-400'
-                }`}
-                title={wsConnected ? 'WebSocket subscription active' : 'Connecting to WS…'}
-              >
-                <Radio className={`w-3 h-3 ${wsConnected ? 'text-violet-500 animate-pulse' : 'text-slate-300'}`} />
-                {wsConnected ? 'WS LIVE' : 'WS…'}
-              </span>
-            )}
+            <span
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[10px] font-bold font-mono transition-all ${
+                wsConnected
+                  ? 'border-violet-200 bg-violet-50 text-violet-700'
+                  : 'border-slate-200 bg-slate-50 text-slate-400'
+              }`}
+              title={wsConnected ? 'WebSocket subscription active' : 'Connecting to WS…'}
+            >
+              <Radio className={`w-3 h-3 ${wsConnected ? 'text-violet-500 animate-pulse' : 'text-slate-300'}`} />
+              {wsConnected ? 'WS LIVE' : 'WS…'}
+            </span>
 
             <button
-              onClick={syncBackendData}
+              onClick={() => void syncBackendData(false)}
               disabled={loading}
               className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-500 rounded-xl transition-all disabled:opacity-40"
               title="Refresh Platform Master"
@@ -1011,7 +692,6 @@ export default function App() {
               funds={funds}
               positions={positions}
               onPlaceOrder={handleOrderPlace}
-              showAdminMode={true}
             />
           )}
 
@@ -1020,7 +700,6 @@ export default function App() {
               orders={orders}
               onCancelOrder={handleOrderCancel}
               onModifyOrder={handleOrderModify}
-              showAdminMode={true}
             />
           )}
 
@@ -1045,15 +724,6 @@ export default function App() {
             />
           )}
 
-          {page === 'admin' && (
-            <AdminDemo
-              fixRequest={orders[0]?.fixRequest}
-              fixResponse={orders[0]?.fixResponse}
-              graphqlRequestExample={QUERIES.placeOrder}
-              auditTrail={auditTrail}
-            />
-          )}
-
           {page === 'security' && (
             <SecurityDetailPage
               security={selectedSecurity}
@@ -1074,7 +744,7 @@ export default function App() {
             <div className="flex items-center justify-between pb-6 border-b border-slate-800/80">
               <div className="flex items-center gap-2">
                 <Landmark className="w-5 h-5 text-blue-400" />
-                <span className="font-extrabold text-white text-sm">Axis Sovereign</span>
+                <span className="font-extrabold text-white text-sm">Demo Sovereign</span>
               </div>
               <button
                 onClick={() => setMobileMenuOpen(false)}
@@ -1103,13 +773,13 @@ export default function App() {
               ))}
             </nav>
 
-            <div className="pt-4 border-t border-slate-800/80 flex items-center gap-2">
+            <div className="pt-4 border-t border-slate-800/80 flex items-center gap-2 text-left">
               <div className="h-8 w-8 bg-blue-900 rounded-full flex items-center justify-center font-bold text-xs text-blue-300">
-                AS
+                {customerName.substring(0, 2).toUpperCase()}
               </div>
               <div className="min-w-0">
-                <span className="text-xs font-bold text-white block truncate">ASL Demo Account</span>
-                <span className="text-[9px] font-mono text-slate-500 block truncate">{CUSTOMER_CODE}</span>
+                <span className="text-xs font-bold text-white block truncate">{customerName}</span>
+                <span className="text-[9px] font-mono text-slate-500 block truncate">{customerCode}</span>
               </div>
             </div>
           </aside>

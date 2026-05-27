@@ -340,7 +340,7 @@ export default function PortfolioPage({ positions, securities, setPage, setSelec
       <div className="flex items-start gap-3 bg-blue-50/50 border border-blue-100 rounded-2xl p-4">
         <HelpCircle className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
         <div className="text-xs text-blue-800 leading-relaxed font-semibold">
-          <strong>Demat Demarcation Notice:</strong> Axis G-Sec holdings represent high-security Sovereign Bonds allocated to your NSDL/CDSL Demat account. In accordance with RBI guidelines, G-Sec holdings are monitored on a dedicated secure ledger, completely isolated from your standard equity equity trading balances to ensure asset trust.
+          <strong>Demo Securities G-Sec holdings:</strong> represent high-security Sovereign Bonds allocated to your NSDL/CDSL Demat account. In accordance with RBI guidelines, G-Sec holdings are monitored on a dedicated secure ledger, completely isolated from your standard equity equity trading balances to ensure asset trust.
         </div>
       </div>
 
