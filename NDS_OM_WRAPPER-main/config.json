@@ -1,0 +1,31 @@
+{
+  "http_host": "localhost",
+  "http_port": 8082,
+  "allowed_origins": ["*"],
+  "connections": [
+    {
+      "connection_id": "conn1",
+      "host": "127.0.0.1",
+      "port": 9090,
+      "use_tls": false,
+      "heartbeat_interval_seconds": 30,
+      "sender_comp_id": "TM001",
+      "sender_sub_id": "SUB01",
+      "target_comp_id": "CCILNDSFIX",
+      "username": "DEALER01",
+      "password": "ENCRYPTED_PASSWORD_HASH_1"
+    },
+    {
+      "connection_id": "conn2",
+      "host": "127.0.0.1",
+      "port": 9090,
+      "use_tls": false,
+      "heartbeat_interval_seconds": 30,
+      "sender_comp_id": "TM002",
+      "sender_sub_id": "SUB02",
+      "target_comp_id": "CCILNDSFIX",
+      "username": "DEALER02",
+      "password": "ENCRYPTED_PASSWORD_HASH_2"
+    }
+  ]
+}
