@@ -1,0 +1,238 @@
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  LIMIT
+}
+
+enum OrderStatus {
+  VALIDATED
+  SENT_TO_FIX
+  ACCEPTED
+  REJECTED
+  PARTIALLY_EXECUTED
+  EXECUTED
+  CANCELLED
+  MODIFIED
+  ON_HOLD
+}
+
+type AuthToken {
+  token: String!
+  customercode: String!
+  name: String!
+}
+
+type Public_Customers {
+  customer_id: Float!
+  customercode: String!
+  name: String!
+  pan: String!
+  status: String!
+  gsecenabled: Boolean!
+}
+
+type Public_Securities {
+  security_id: Float!
+  isin: String!
+  contractid: String!
+  name: String!
+  coupon: String!
+  maturitydate: String!
+  bid: Float!
+  ask: Float!
+  ltp: Float!
+  yield: String!
+  lotsize: Int!
+  ticksize: Float!
+}
+
+type Public_Funds {
+  fund_id: Float!
+  customercode: String!
+  availablebalance: Float!
+  blockedbalance: Float!
+  usedtoday: Float!
+}
+
+type Public_Positions {
+  position_id: Float!
+  customercode: String!
+  isin: String!
+  securityname: String!
+  quantity: Int!
+  averageprice: Float!
+  marketvalue: Float!
+}
+
+type Public_Orders {
+  order_id: Float!
+  customercode: String!
+  clientid: String!
+  clordid: String!
+  ndsorderid: String
+  isin: String!
+  contractid: String!
+  securityname: String!
+  side: OrderSide!
+  ordertype: OrderType!
+  quantity: Int!
+  limitprice: Float!
+  ordervalue: Float!
+  status: OrderStatus!
+  message: String
+  lastactivitytimestamp: Float
+  fixrequest: String
+  fixresponse: String
+  createdat: String!
+  updatedat: String!
+}
+
+type Public_Trades {
+  trade_id: Float!
+  customercode: String!
+  orderid: Float!
+  isin: String!
+  securityname: String!
+  side: OrderSide!
+  quantity: Int!
+  price: Float!
+  tradevalue: Float!
+  tradetime: String!
+}
+
+type Public_Ledger_Entries {
+  ledger_id: Float!
+  customercode: String!
+  timestamp: String!
+  type: String!
+  amount: Float!
+  balanceafter: Float!
+  referenceid: String!
+  status: String!
+  description: String!
+}
+
+type Public_Audit_Events {
+  audit_id: Float!
+  eventtype: String!
+  payload: String!
+  createdat: String!
+}
+
+# --- Connections (Pagination Wrappers) ---
+type Public_CustomersConnection {
+  results: [Public_Customers!]!
+  next_token: String
+}
+type Public_SecuritiesConnection {
+  results: [Public_Securities!]!
+  next_token: String
+}
+type Public_FundsConnection {
+  results: [Public_Funds!]!
+  next_token: String
+}
+type Public_PositionsConnection {
+  results: [Public_Positions!]!
+  next_token: String
+}
+type Public_OrdersConnection {
+  results: [Public_Orders!]!
+  next_token: String
+}
+type Public_TradesConnection {
+  results: [Public_Trades!]!
+  next_token: String
+}
+type Public_Ledger_EntriesConnection {
+  results: [Public_Ledger_Entries!]!
+  next_token: String
+}
+type Public_Audit_EventsConnection {
+  results: [Public_Audit_Events!]!
+  next_token: String
+}
+
+# --- Filters ---
+input Public_CustomersFilter { customercode: String, name: String, pan: String }
+input Public_SecuritiesFilter { isin: String, name: String }
+input Public_FundsFilter { customercode: String }
+input Public_PositionsFilter { customercode: String, isin: String }
+input Public_OrdersFilter { order_id: Float, customercode: String, status: String }
+input Public_TradesFilter { customercode: String, isin: String }
+input Public_Ledger_EntriesFilter { customercode: String }
+input Public_Audit_EventsFilter { eventtype: String }
+
+# --- Mutation Inputs ---
+input CreatePublic_OrdersInput {
+  customercode: String!
+  isin: String!
+  side: OrderSide!
+  ordertype: OrderType!
+  quantity: Int!
+  limitprice: Float!
+}
+input UpdatePublic_OrdersInput {
+  order_id: Float!
+  quantity: Int
+  limitprice: Float
+  status: OrderStatus
+}
+input CreatePublic_Ledger_EntriesInput {
+  customercode: String!
+  type: String!
+  amount: Float!
+  balanceafter: Float!
+  referenceid: String!
+  status: String!
+  description: String!
+}
+
+type Query {
+  getPublic_securities(filter: Public_SecuritiesFilter, limit: Int, next_token: String): Public_SecuritiesConnection!
+  getPublic_customers(filter: Public_CustomersFilter, limit: Int, next_token: String): Public_CustomersConnection!
+  getPublic_funds(filter: Public_FundsFilter, limit: Int, next_token: String): Public_FundsConnection!
+  getPublic_positions(filter: Public_PositionsFilter, limit: Int, next_token: String): Public_PositionsConnection!
+  getPublic_orders(filter: Public_OrdersFilter, limit: Int, next_token: String): Public_OrdersConnection!
+  getPublic_trades(filter: Public_TradesFilter, limit: Int, next_token: String): Public_TradesConnection!
+  getPublic_ledger_entries(filter: Public_Ledger_EntriesFilter, limit: Int, next_token: String): Public_Ledger_EntriesConnection!
+  getPublic_audit_events(filter: Public_Audit_EventsFilter, limit: Int, next_token: String): Public_Audit_EventsConnection!
+}
+
+type Mutation {
+  login(customercode: String!, pan: String!): AuthToken!
+  createPublic_orders(input: CreatePublic_OrdersInput!): Public_Orders!
+  updatePublic_orders(input: UpdatePublic_OrdersInput!): Public_Orders!
+  createPublic_ledger_entries(input: CreatePublic_Ledger_EntriesInput!): Public_Ledger_Entries!
+}
+
+type OrderStatusEvent {
+  orderId: Float!
+  clOrdId: String!
+  ndsOrderId: String
+  isin: String!
+  securityName: String!
+  side: OrderSide!
+  quantity: Int!
+  limitPrice: Float!
+  orderValue: Float!
+  status: OrderStatus!
+  message: String
+  updatedAt: String!
+}
+
+type FundsEvent {
+  customerCode: String!
+  availableBalance: Float!
+  blockedBalance: Float!
+  usedToday: Float!
+}
+
+type Subscription {
+  orderStatusChanged(customerCode: String!): OrderStatusEvent!
+  securitiesUpdated: [Public_Securities!]!
+  fundsUpdated(customerCode: String!): FundsEvent!
+}
